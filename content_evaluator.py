@@ -6,32 +6,42 @@ import sqlite3
 import string
 # Common Python Libraries
 import numpy as np
-import nltk
 
+import nltk
 # Other Python Libraries
 import openai
-#nltk.download('vader_lexicon')
-from nltk.sentiment.vader import SentimentIntensityAnalyzer
-import spacy
-NLP_SPACY = spacy.load("en_core_web_sm")
+
+
 # Custom Python Libraries
 from chatbot import ChatBot
 
+from transformers import GPT2Tokenizer
+import spacy
 
 
 class Content_Evaluator(ChatBot):
-    def __init__(self,search_term = 'alcoholic beverages', api_file='api_key.pkl') -> None:
+    def __init__(self,search_term = 'alcoholic beverages', 
+                 api_file='api_key.pkl',load_tokenizer = True,
+                load_spacy = True, load_vader = True) -> None:
         super().__init__(api_file)
-        self.analyzer = SentimentIntensityAnalyzer()
+        if load_tokenizer:
+            
+            self.tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+        if load_spacy:
+            
+            self.NLP_SPACY = spacy.load("en_core_web_sm")
+
+
+
+        if load_vader:
+            nltk.download('vader_lexicon')
+            from nltk.sentiment.vader import SentimentIntensityAnalyzer
+            self.analyzer = SentimentIntensityAnalyzer()
         self.search_term = search_term
-        self.categories = ['Cocktail recipes and tutorials','Wine and beer recommendations','Party and event photos',
-                      'Alcohol-related memes and humor','Reviews of bars and restaurants','Alcohol-related news and trends',
-                      'Personal stories and experiences','Celebrity endorsements and sponsorships',
-                    'Health and wellness tips','Advocacy and activism', f"Not related to {search_term}"]
-        self.questions = {
-            'category': f'''Which one of these categories does this post best fit into? {self.categories}''',
-            'summary':'''Summarize the content in 3 words or less'''
-                    }
+    def get_tokens(self, prompt):
+        tokens = self.tokenizer.encode(prompt)
+        return len(tokens)
+
     def get_completion(self,prompt, model="gpt-3.5-turbo"):
         messages = [{"role": "user", "content": prompt}]
         response = openai.ChatCompletion.create(
@@ -42,13 +52,14 @@ class Content_Evaluator(ChatBot):
         return response.choices[0].message["content"]
     def relevance_prompt(self, content):
         prompt = f'''
-        Does the content below (delimited by triple backticks) contain references to alcoholic consumption, alcoholic beverages or marketing? 
-        Return either 'Yes' or 'No'.
+        Consider the topics and subject matter in Reddit post below (delimited by brackets).
+        Consider the difference between alcohol used in medicine and cleaning and alcohol used for human consumption.
+        Is the subject matter in the Reddit post related to alcoholic beverages?
+        Answer the question with either a Yes or a No.
 
-        ```{content}```
-        
-        Answer:
-        '''
+        content: <{content}>
+
+        Answer:'''
         return prompt
     def vader_sentiment(self, content):
         '''
@@ -58,29 +69,40 @@ class Content_Evaluator(ChatBot):
         sentiment = scores['compound']
         return sentiment
     def named_entity(self,content):
-        doc = NLP_SPACY(content)
-        entities = [entity.text for entity in doc.ents]
+        removed_entities = ['AITA','TIL','S']
+
+        doc = self.NLP_SPACY(content)
+        entities = {}
+        for entity in doc.ents:
+            if (entity.label_ == 'ORG') and (entity.text in removed_entities):
+                continue
+            labels = []
+            if entity.label_ not in labels:
+                labels.append(entity.label_)
+                entities[entity.label_] = entity.text
+            else:
+                entities[entity.label_] =entities[entity.label_]+ " " + entity.text
+        
         if len(entities)==0: return None
         else: return entities
 
     def sentiment_prompt(self, content):
         prompt = f"""What is the sentiment of this post? (respond with "positive", "negative", or "neutral" only): {content}"""
         return prompt
-    def evaluate_prompt(self, prompt,model = "text-ada-001",temperature = 0.02,
-                        max_tokens = 1000, frequency_penalty = 0,top_p = 0.1 ):
+    def evaluate_prompt(self, prompt,engine = "text-curie-001",temperature = 0.02,
+                        max_tokens = 1000,  ):
         response = openai.Completion.create(
-                    model=model,
+                    engine=engine,
                     prompt = prompt,
                     temperature = temperature,
                     max_tokens = max_tokens,
-                    frequency_penalty=frequency_penalty,
-                    presence_penalty=0,
-                    top_p = top_p,
-                    n=1)
+                    n=1,
+                    stop = None)
             
         result = response.choices[0].text.strip()
         
         return result
+
     def strip_punctuation(self, input_string, punctuation=string.punctuation):
         """Removes all occurrences of the specified punctuation from the input string."""
         return input_string.translate(str.maketrans('', '', punctuation))
@@ -133,13 +155,13 @@ if __name__ == '__main__':
     #content = 'Hey San Francisco - how do you "Spritz"? Do it the @lillet way. Cheers 🥂#drinkresponsibly #lillet #thelilletway #dessertwine #SF #sanfrancisco #outdoor#ooh #advertising #wallscapes #marketing \n\nhttps://preview.redd.it/lu81ozglb3e31.jpg?width=3061&amp;format=pjpg&amp;auto=webp&amp;v=enabled&amp;s=6e83c5670262eb164940d38ab6a5f188aa38ea92'
     #content = 'Barack Obama and Anthony Bourdain enjoying a $6 dollar meal and a beer in Hanoi, Vietnam. The table they ate at was later enclosed in glass and put in display.'
     #content = 'TIL that alcohol consumption in the U.S. was almost 300% higher in the 1800s, and that whiskey at the time was cheaper than beer, coffee or milk.'
-    #content = 'Is there any way to fix my series X’s case? Rubbing alcohol went on it and took off some of the paint making it look oily'
+    content = 'Is there any way to fix my series X’s case? Rubbing alcohol went on it and took off some of the paint making it look oily'
     #content = '''25 Employees Walk Out After Pennsylvania Restaurant Owner Names Drinks ‘The Negro’ And ‘The Caucasian’'''
     #content = '''by the Ohio Governor and EPA Chief to prove the tap water was safe by pretending to drink it.'''
-    content = '''Wife and I went to Mexico for our honeymoon. I had the idea of buying a bottle of tequila and drinking a shot every anniversary. It broke on the way home.'''
+    #content = '''AITA my wife and I went to Mexico for our honeymoon. I had the idea of buying a bottle of tequila and drinking a shot every anniversary. It broke on the way home.'''
     #content = '''Why does alcohol still taste like shit? I'm 21, the drinking age is 18 where I am. All my peers already drink. I find beer and wine disgusting and can barely tolerate the taste of vodka and lady drinks (as a dude.) When does it get better?'''
 
-    evaluator = Content_Evaluator()
+    evaluator = Content_Evaluator(load_vader=False)
 
     test_prompt = f'''
     You will be provided the Title and text of a Reddit post deliminated below with triple backticks.
@@ -157,27 +179,46 @@ if __name__ == '__main__':
 
     Output (Python Dictionary):'''
 
-    test_response = evaluator.get_completion(test_prompt)
+    # COUNT THE TOKENS
+    num_tokens = evaluator.get_tokens(content)
 
+    # MOST DETAILED RESPONSE 
+    #test_response = evaluator.get_completion(test_prompt)
+
+    # RELEVANCE
     prompt = evaluator.relevance_prompt(content)
-    relevance = evaluator.evaluate_prompt(prompt, model="text-curie-001")
     
+    iterations = 5
+    for i in range(iterations):
+    
+        relevance = evaluator.evaluate_prompt(prompt, engine='text-ada-001',
+                                          temperature=.02, max_tokens = num_tokens+1)
+        # relevance = evaluator.get_completion(prompt)
+        print(relevance)
+
+
+    # SENTIMENT
     #sentiment = evaluator.vader_sentiment(content)
 
-    #named_entity = evaluator.named_entity(content)
+    # NAMED_ENTITY
 
-    prompt = evaluator.category_prompt(content)
-    #category = evaluator.evaluate_prompt(prompt,model='text-davinci-002')
-    #category = evaluator.strip_punctuation(category, "'',.")
-    print(f'''
+    named_entity = evaluator.named_entity(content)
+    print(named_entity)
 
-    content: {content}
-    lenght_of_prompt: {len(prompt)}
-    relevance: {relevance}
+    # prompt = evaluator.category_prompt(content)
+    # #category = evaluator.evaluate_prompt(prompt,model='text-davinci-002')
+    # #category = evaluator.strip_punctuation(category, "'',.")
+    # print(f'''
 
-    length_of_prompt: {len(test_prompt)}
-    test_response: {test_response}
-    ''')
+    # content: {content}
+    # lenght_of_prompt: {len(prompt)}
+    # num_tokens: {num_tokens}
+
+    # relevance: {relevance}
+
+    # length_of_prompt: {len(test_prompt)}
+    # test_response: {test_response}
+    # ''')
     
     # 
     # sentiment (VADER): {sentiment}
